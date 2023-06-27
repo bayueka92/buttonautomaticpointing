@@ -1,28 +1,10 @@
+#include <SoftwareSerial.h>
+#include <LiquidCrystal.h>
 #include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+SoftwareSerial hc08(18, 19);  // TX: Pin 18 , TX: Pin 19
 
-// Register Function
-// 0        Command register
-
-// 1        Compass Bearing as a byte, i.e. 0-255 for a full circle
-// 2,3      Compass Bearing as a word, i.e. 0-3599 for a full circle, representing 0-359.9 degrees. Register 2 being the high byte
-
-// 4        Pitch angle - signed byte giving angle in degrees from the horizontal plane, Kalman filtered with Gyro
-// 5        Roll angle - signed byte giving angle in degrees from the horizontal plane, Kalman filtered with Gyro
-
-// 6,7      Magnetometer X axis raw output, 16 bit signed integer with register 6 being the upper 8 bits
-// 8,9      Magnetometer Y axis raw output, 16 bit signed integer with register 8 being the upper 8 bits
-// 10,11    Magnetometer Z axis raw output, 16 bit signed integer with register 10 being the upper 8 bits
-
-// 12,13    Accelerometer  X axis raw output, 16 bit signed integer with register 12 being the upper 8 bits
-// 14,15    Accelerometer  Y axis raw output, 16 bit signed integer with register 14 being the upper 8 bits
-// 16,17    Accelerometer  Z axis raw output, 16 bit signed integer with register 16 being the upper 8 bits
-
-// 18,19    Gyro X axis raw output, 16 bit signed integer with register 18 being the upper 8 bits
-// 20,21    Gyro Y axis raw output, 16 bit signed integer with register 20 being the upper 8 bits
-// 22,23    Gyro Z axis raw output, 16 bit signed integer with register 22 being the upper 8 bits
-
-//---------------------------------
-
+LiquidCrystal_I2C lcd(0x27, 16, 2); // Sesuaikan alamat I2C dengan alamat yang digunakan oleh LCD I2C Anda
 //Address of the CMPS14 compass on i2c
 #define _i2cAddress 0x60
 
@@ -31,7 +13,7 @@
 #define BEARING_Register 2
 #define PITCH_Register 4
 #define ROLL_Register 5
-
+ 
 #define MAGNETX_Register 6
 #define MAGNETY_Register 8
 #define MAGNETZ_Register 10
@@ -55,15 +37,13 @@
 #define Satelite3_Choosed 53
 #define Satelite4_Choosed 54
 #define SateliteHome_Choosed 55
+#define SateliteWait_Choosed 56
 
 //---------------------------------
 
 byte _byteHigh;
 byte _byteLow;
 
-// Please note without clear documentation in the technical documenation
-// it is notoriously difficult to get the correct measurement units.
-// I've tried my best, and may revise these numbers.
 
 int bearing;
 int nReceived;
@@ -91,26 +71,31 @@ float gyroScale = 1.0f / 16.f;  // 1 Dps
 int State_ChooseSatelite, State_FindPitch, State_FindRoll;
 bool Status_FindPitch, Status_FindRoll, Status_PitchInPos, Status_RollInPos;
 int SetPoint_Pitch, SetPoint_Roll, Calibrate_ValRoll, Calibrate_ValPitch;
+bool Flag_Pitch, Flag_Roll;
+
 //int Pitch_Satelite1, Pitch_Satelite2, Pitch_Satelite3, Roll_Satelite1, Roll_Satelite2, Roll_Satelite3;
 
-int Pitch_Satelite1 = 45;
-int Pitch_Satelite2 = 45;
-int Pitch_Satelite3 = 55;
-int Roll_Satelite1 = 30;
-int Roll_Satelite2 = 80;
-int Roll_Satelite3 = 60;
+int Pitch_Satelite1 = 40;
+int Pitch_Satelite2 = 30;
+int Pitch_Satelite3 = 35;
+int Roll_Satelite1 = 40;
+int Roll_Satelite2 = 45;
+int Roll_Satelite3 = 35;
 
 void setup() {
-
-  // Initialize the serial port to the User
-  // Set this up early in the code, so the User sees all messages
   Serial.begin(9600);
+  hc08.begin(9600);
+
+  // Mengatur HC-08 sebagai master
+  hc08.write("AT+ROLE1\r\n");
+  delay(500); // Tunggu respons dari HC-08
+
   // Initialize i2c
   Wire.begin();
   pinMode(4, OUTPUT);
   pinMode(5, OUTPUT);
   pinMode(8, OUTPUT);
-  pinMode(11, OUTPUT);
+  pinMode(11, OUTPUT);                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      
   pinMode(12, OUTPUT);
   pinMode(22, OUTPUT);
   pinMode(30, INPUT_PULLUP);
@@ -123,10 +108,29 @@ void setup() {
   pinMode(23, INPUT_PULLUP);
 
   State_ChooseSatelite = choose_Satelite;
-  Calibrate_ValRoll = 71;
+  Calibrate_ValRoll = 7;
+  State_FindPitch = 0;
+  State_FindRoll = 0;
+
+  lcd.begin(16, 2);  // Initialize the LCD
+  lcd.backlight();  // Turn on the backlight
+  lcd.setCursor(0, 0);  // Set the cursor to the first column, first row
+  lcd.print("  Auto Pointing  ");  // Print the first line of text
+  lcd.setCursor(0, 1);  // Set the cursor to the first column, second row
+  lcd.print("  IoNLINK VSAT   ");  // Print the second line of text
 }
 
 void loop() {
+  if (hc08.available()) {
+    char data = hc08.read();
+    Serial.print("Data yang diterima: ");  // Menampilkan data yang diterima dari HC-08 ke Serial Monitor
+    Serial.println(data); // Menampilkan data di Serial Monitor
+  }
+
+  if (Serial.available()) {
+    char data = Serial.read();
+    hc08.write(data);  // Mengirim data dari Serial Monitor ke HC-08
+  }
 
   // Read the Compass
   ReadCompass();
@@ -153,30 +157,32 @@ void loop() {
   if (digitalRead(30) == LOW) {
     analogWrite(2, 0);
     analogWrite(3, 80);
-  }
-  else if (digitalRead(29) == LOW) {
+  } else if (digitalRead(29) == LOW) {
     analogWrite(2, 80);
     analogWrite(3, 0);
-    
-  }
-  else{
-    analogWrite(2, 0);
-    analogWrite(3, 0);
+
+  } else {
+    if (State_ChooseSatelite == choose_Satelite) {
+      analogWrite(2, 0);
+      analogWrite(3, 0);
+    }
+    //analogWrite(2, 0);
+    //analogWrite(3, 0);
   }
 
   if (digitalRead(28) == LOW) {
     analogWrite(6, 0);
-    analogWrite(7, 30);
-  }
-  else if (digitalRead(27) == LOW){
-    analogWrite(6, 30);
+    analogWrite(7, 40);
+  } else if (digitalRead(27) == LOW) {
+    analogWrite(6, 40);
     analogWrite(7, 0);
+  } else {
+    if (State_ChooseSatelite == choose_Satelite) {
+      analogWrite(6, 0);
+      analogWrite(7, 0);
+    }
   }
-  else {
-    analogWrite(6, 0);
-    analogWrite(7, 0);
-  }
-
+  /*
   if (digitalRead(26) == LOW) {
     analogWrite(9, 0);
     analogWrite(10, 75);
@@ -189,144 +195,203 @@ void loop() {
     analogWrite(9, 0);
     analogWrite(10, 0);
   }
-
+*/
   // Print data to Serial Monitor window
+  
   Serial.print("$CMP,");
   Serial.print(bearing);
   Serial.print(",");
   Serial.print(pitch);
   Serial.print(",");
   Serial.print(roll);
-  Serial.println(" degrees,");
+  Serial.print(" (Sudut Azimuth");
+  Serial.print(" 80,73)");
+  Serial.print(" (Sudut Elevasi");
+  Serial.print(" 45,64)");
+  //Serial.print(" (Sudut Azimuth");
+  //Serial.print(" 35,72)");
+  //Serial.print(" (Sudut Elevasi");
+  //Serial.print(" 79,48)");
+  //Serial.print(" (Sudut Azimuth");
+  //Serial.print(" 1,63)");
+  //Serial.print(" (Sudut Elevasi");
+  //Serial.print(" 81,43)");
+  Serial.print(" degrees,");
+  Serial.print(",Satelite ");
+  Serial.print(State_ChooseSatelite);
+  Serial.print(",State Pitch ");
+  Serial.print(State_FindPitch);
+  Serial.print(",State Roll ");
+  Serial.print(State_FindRoll);
+  Serial.print(",Home ");
+  Serial.print(digitalRead(23));
+  Serial.print(",Sat1 ");
+  Serial.print(digitalRead(24));
+  Serial.print(",Sat2 ");
+  Serial.print(digitalRead(25));
+  Serial.print(",Sat3 ");
+  Serial.print(digitalRead(26));
+  Serial.print(",Pitch In Pos ");
+  Serial.print(Status_PitchInPos);
+  Serial.print(",Roll In Pos ");
+  Serial.print(Status_RollInPos);
+  Serial.print(",SetPoint Pitch ");
+  Serial.print(SetPoint_Pitch);
+  Serial.print(",SetPoint Roll ");
+  Serial.println(SetPoint_Roll);
+  
+  // =============================================== Case Moving ============================================================
 
-// =============================================== Case Moving ============================================================
+  
 
-if(pitch >= SetPoint_Pitch-3 && pitch <= SetPoint_Pitch+3){
-  Status_PitchInPos = true;
-}
-if(bearing >= SetPoint_Roll-3 && bearing <= SetPoint_Roll+3){
-  Status_RollInPos = true;
-}
+  switch (State_ChooseSatelite) {
 
-switch(State_ChooseSatelite){
+    case choose_Satelite:
 
-  case choose_Satelite:
-
-    if(digitalRead(23) == LOW){
-      if(Status_PitchInPos){
-        State_ChooseSatelite = SateliteHome_Choosed;
-        //State_FindPitch = 1;
-        break;
-      }      
-    }
-    else if(digitalRead(24) == LOW){
-      if(Status_PitchInPos){
-        State_ChooseSatelite = Satelite1_Choosed;
-        //State_FindPitch = 1;
-        break;
+      if (digitalRead(23) == LOW) {
+        //if (Status_PitchInPos) {
+          State_ChooseSatelite = SateliteHome_Choosed;
+          //State_FindPitch = 1;
+          //break;
+        //}
+      } else if (digitalRead(24) == LOW) {
+        //if (Status_PitchInPos) {
+          State_ChooseSatelite = Satelite1_Choosed;
+          //State_FindPitch = 1;
+          //break;
+        //}
+      } else if (digitalRead(25) == LOW) {
+        //if (Status_PitchInPos) {
+          State_ChooseSatelite = Satelite2_Choosed;
+          //State_FindPitch = 1;
+          //break;
+        //}
+      } else if (digitalRead(26) == LOW) {
+        //if (Status_PitchInPos) {
+          State_ChooseSatelite = Satelite3_Choosed;
+          //State_FindPitch = 1;
+          //break;
+        //}
+      } else {
+        //break; // No Action
+        ;
       }
-    }
-    else if(digitalRead(25) == LOW){
-      if(Status_PitchInPos){
-        State_ChooseSatelite = Satelite2_Choosed;
-        //State_FindPitch = 1;
-        break;
-      }
-    }
-    else if(digitalRead(26) == LOW){
-      if(Status_PitchInPos){
-        State_ChooseSatelite = Satelite3_Choosed;
-        //State_FindPitch = 1;
-        break;
-      }
-    }
-    else{
-      ; // No Action
-    }
+      break;
 
-  case Satelite1_Choosed:
-    SetPoint_Pitch = Pitch_Satelite1;
-    SetPoint_Roll = Calibrate_ValRoll + Roll_Satelite1;
-    if(Status_PitchInPos){
-      State_FindPitch = 1;
+    case Satelite1_Choosed:
+      SetPoint_Pitch = Pitch_Satelite1;
+      SetPoint_Roll = Calibrate_ValRoll + Roll_Satelite1;
+      //if (Status_PitchInPos) {
+        State_FindPitch = 1;
+        State_ChooseSatelite = SateliteWait_Choosed;
+        //break;
+      //}
       break;
-    }
-  case Satelite2_Choosed:
-    SetPoint_Pitch = Pitch_Satelite2;
-    SetPoint_Roll = Calibrate_ValRoll + Roll_Satelite2;
-    if(Status_PitchInPos){
-      State_FindPitch = 1;
+    case Satelite2_Choosed:
+      SetPoint_Pitch = Pitch_Satelite2;
+      SetPoint_Roll = Calibrate_ValRoll + Roll_Satelite2;
+      //if (Status_PitchInPos) {
+        State_FindPitch = 1;
+        State_ChooseSatelite = SateliteWait_Choosed;
+        //break;
+      //}
       break;
-    }
-  case Satelite3_Choosed:
-    SetPoint_Pitch = Pitch_Satelite3;
-    SetPoint_Roll = Calibrate_ValRoll + Roll_Satelite3;
-    if(Status_PitchInPos){
-      State_FindPitch = 1;
+    case Satelite3_Choosed:
+      SetPoint_Pitch = Pitch_Satelite3;
+      SetPoint_Roll = Calibrate_ValRoll + Roll_Satelite3;
+      //if (Status_PitchInPos) {
+        State_FindPitch = 1;
+        State_ChooseSatelite = SateliteWait_Choosed;
+        //break;
+      //}
       break;
-    }
-  case Satelite4_Choosed:
-    ;
-  case SateliteHome_Choosed:
-    SetPoint_Pitch = 0;
-    SetPoint_Roll = Calibrate_ValRoll + 0;
-    if(Status_PitchInPos){
-      State_FindPitch = 1;
+    case Satelite4_Choosed:
       break;
-    }
-}
+    case SateliteHome_Choosed:
+      SetPoint_Pitch = 0;
+      SetPoint_Roll = Calibrate_ValRoll + 0;
+      //if (Status_PitchInPos) {
+        State_FindPitch = 1;
+        State_ChooseSatelite = SateliteWait_Choosed;
+        //break;
+      //}
+      break;
+    case SateliteWait_Choosed:
+      break;
+  }
 
-switch(State_FindPitch){
-  case 0:
-    ; // No Action
-  case 1:
-    if (Status_PitchInPos == false){
-      if(pitch < SetPoint_Pitch){
+  if (pitch >= SetPoint_Pitch - 5 && pitch <= SetPoint_Pitch + 5) {
+    Status_PitchInPos = true;
+  } else {
+    Status_PitchInPos = false;
+  }
+  if (bearing >= SetPoint_Roll - 3 && bearing <= SetPoint_Roll + 3) {
+    Status_RollInPos = true;
+  } else {
+    Status_RollInPos = false;
+  }
+
+  switch (State_FindPitch) {
+    case 0:
+      Flag_Pitch = 0;
+      //if(Flag_Pitch > 0){
+      break;
+      //}
+      //break; // No Action
+    case 1:
+      if (Status_PitchInPos == false) {
+        if (pitch < SetPoint_Pitch) {
+          analogWrite(2, 0);
+          analogWrite(3, 50);
+          //break;
+        } else if (pitch > SetPoint_Pitch) {
+          analogWrite(2, 50);
+          analogWrite(3, 0);
+          //break;
+        }
+      } else if (Status_PitchInPos) {
         analogWrite(2, 0);
-        analogWrite(3, 50);
-      }
-      else if(pitch > SetPoint_Pitch)
-      {
-        analogWrite(2, 50);
         analogWrite(3, 0);
+        State_FindPitch = 2;
+        //break;
       }
-    }
-    else if(Status_PitchInPos){
-      analogWrite(2, 0);
-      analogWrite(3, 0);
-      State_FindPitch = 2;
       break;
-    }
-  case 2:
-    State_FindRoll = 1;
-    State_FindPitch = 0;
-    break;
-}
+    case 2:
+      State_FindRoll = 1;
+      State_FindPitch = 0;
+      //break;
+  }
 
-switch(State_FindRoll){
-  case 0:
-    ; // No Action
-  case 1:
-    if(Status_RollInPos == false){
-      if(bearing < SetPoint_Roll){
+  switch (State_FindRoll) {
+    case 0:
+      //break; // No Action
+      Flag_Roll = 0;
+      //if(Flag_Roll > 0){
+      break;
+      //}
+    case 1:
+      if (Status_RollInPos == false) {
+        if (bearing < SetPoint_Roll) {
+          analogWrite(7, 0);
+          analogWrite(6, 25);
+          //break;
+        } else if (bearing > SetPoint_Roll) {
+          analogWrite(7, 25);
+          analogWrite(6, 0);
+          //break;
+        }
+      } else if (Status_RollInPos) {
         analogWrite(6, 0);
-        analogWrite(7, 15);
-      }
-      else if(bearing > SetPoint_Roll){
-        analogWrite(6, 15);
         analogWrite(7, 0);
+        State_FindRoll = 2;
+        //break;
       }
-    }
-    else if(Status_RollInPos){
-      analogWrite(6, 0);
-      analogWrite(7, 0);
-      State_FindRoll = 2;
       break;
-    }
-  case 2:
-    State_ChooseSatelite = choose_Satelite;
-    State_FindRoll = 0;
-}
+    case 2:
+      State_ChooseSatelite = choose_Satelite;
+      State_FindRoll = 0;
+      //break;
+  }
 
 
 
@@ -334,7 +399,7 @@ switch(State_FindRoll){
 
 
 
-// ========================================================================================================================
+  // ========================================================================================================================
 
   /*Serial.print("\t$ACC,");
   Serial.print(accelX, 4);
